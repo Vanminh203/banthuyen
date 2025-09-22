@@ -8,7 +8,10 @@ import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
-    private var mediaPlayer: MediaPlayer? = null
+    companion object {
+        // Để có thể truy cập từ GameActivity
+        var mediaPlayer: MediaPlayer? = null
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,13 +31,17 @@ class MainActivity : AppCompatActivity() {
         }
         animator.start()
 
-        // 🔹 Tạo MediaPlayer cho nhạc nền
-        mediaPlayer = MediaPlayer.create(this, R.raw.backgroundmusic)
-        mediaPlayer?.isLooping = true // Lặp lại nhạc
-        mediaPlayer?.start()
+        // 🔹 Tạo MediaPlayer cho nhạc nền (chỉ tạo nếu chưa có)
+        if (mediaPlayer == null) {
+            mediaPlayer = MediaPlayer.create(this, R.raw.backgroundmusic)
+            mediaPlayer?.isLooping = true
+            mediaPlayer?.start()
+        }
 
         // 🔹 Nút Start
         startButton.setOnClickListener {
+            // Tạm dừng nhạc khi vào game
+            mediaPlayer?.pause()
             val intent = Intent(this, GameActivity::class.java)
             startActivity(intent)
         }
@@ -45,8 +52,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Khi quay lại MainActivity từ GameActivity, phát nhạc tiếp
+        mediaPlayer?.start()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        // Giải phóng nhạc nền khi thoát app
         mediaPlayer?.release()
         mediaPlayer = null
     }

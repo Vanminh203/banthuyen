@@ -7,9 +7,10 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Banthuyen">
+        android:theme="@style/Theme.Banthuyen"
+        android:attributionTags="game_audio">
 
-        <activity
+    <activity
             android:name="com.example.banthuyen.MainActivity"
             android:exported="true"
             tools:ignore="Instantiatable">

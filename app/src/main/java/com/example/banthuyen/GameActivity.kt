@@ -2,6 +2,8 @@ package com.example.banthuyen
 
 import android.content.Context
 import android.graphics.*
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.SoundPool
 import android.os.Bundle
 import android.view.MotionEvent
@@ -18,7 +20,6 @@ class GameActivity : AppCompatActivity() {
         setContentView(GameView(this))
     }
 }
-
 class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder.Callback {
     private var isPlaying = false
     private lateinit var gameThread: Thread
@@ -37,6 +38,26 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     private var shieldPowerBitmap: Bitmap
     private val powerUps = mutableListOf<PowerUp>()
     private var bulletBoostRunnable: Runnable? = null
+    private var soundPowerUp = 0
+    private var soundShipExplosion = 0
+    private val soundLoaded = mutableMapOf<Int, Boolean>()
+    private var isGameOver = false
+
+    // Bitmap toggle nhạc nền
+    private var musicOnBitmap: Bitmap
+    private var musicOffBitmap: Bitmap
+    private lateinit var musicRect: RectF
+
+    // Bitmap toggle sound effect
+    private var soundOnBitmap: Bitmap
+    private var soundOffBitmap: Bitmap
+    private var isSoundOn = true
+    private lateinit var soundRect: RectF
+
+    // MediaPlayer cho nhạc nền
+    private lateinit var bgm: MediaPlayer
+    private var isMusicOn = false
+
 
     // Thêm cơ chế
     private var bulletBoostActive = false
@@ -59,12 +80,41 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         targetBitmap = BitmapFactory.decodeResource(resources, R.drawable.muctieu)
         bulletsBitmap = BitmapFactory.decodeResource(resources, R.drawable.dan)
         paint = Paint()
-        soundPool = SoundPool.Builder().setMaxStreams(5).build()
+
+        // SoundPool
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+        soundPool = SoundPool.Builder()
+            .setMaxStreams(5)
+            .setAudioAttributes(audioAttributes)
+            .build()
+
+        soundPool.setOnLoadCompleteListener { _, sampleId, status ->
+            if (status == 0) {
+                soundLoaded[sampleId] = true
+                android.util.Log.d("SOUND", "Loaded OK: $sampleId")
+            }
+        }
+
         soundShoot = soundPool.load(context, R.raw.shoot, 1)
         soundHitWall = soundPool.load(context, R.raw.hitwall, 1)
         soundWarning = soundPool.load(context, R.raw.warning, 1)
+        soundPowerUp = soundPool.load(context, R.raw.powerup, 1)
+        soundShipExplosion = soundPool.load(context, R.raw.shipexplosion, 1)
+
         bulletPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.dan)
         shieldPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.khien)
+
+        musicOnBitmap = BitmapFactory.decodeResource(resources, R.drawable.musicturnon)
+        musicOffBitmap = BitmapFactory.decodeResource(resources, R.drawable.musicturnoff)
+        soundOnBitmap = BitmapFactory.decodeResource(resources, R.drawable.soundon)
+        soundOffBitmap = BitmapFactory.decodeResource(resources, R.drawable.soundoff)
+
+        bgm = MediaPlayer.create(context, R.raw.backgroundmusic)
+        bgm.isLooping = true
     }
 
     override fun run() {
@@ -76,13 +126,14 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     }
 
     private fun update() {
+        if (isGameOver) return
         frameCount++
         // Xác định delay bắn dựa trên buff
         val shootDelay = if (bulletBoostActive) 5 else 15  // bắn nhanh hơn khi có buff
         // Bắn khi đang chạm vào phi thuyền
         if (isShooting && frameCount % shootDelay == 0) {
             bullets.add(Bullet(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
-            soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
+            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
         }
 
         // === Cập nhật tất cả đạn, xóa đạn ra khỏi màn hình ===
@@ -149,6 +200,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                         isShieldActive = true
                         handler.postDelayed({ isShieldActive = false }, 5000)
                     }
+                    if (isSoundOn && soundLoaded[soundPowerUp] == true ) playSound(soundPowerUp)
                     powerUps.removeAt(i)
                 }
             }
@@ -167,8 +219,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
 
                     // TODO: hiệu ứng nổ / tăng điểm / sound
                     // score += 10
-                    // soundPool.play(soundExplosion, 1f, 1f, 1, 0, 1f)
-
+                    //soundPool.play(soundExplosion, 1f, 1f, 1, 0, 1f)
                     hit = true
                     break
                 }
@@ -181,21 +232,33 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             val t = targets[i]
             if (RectF.intersects(t.position, shipRect)) {
                 if (isShieldActive) {
-                    // Có khiên thì chặn, mất khiên
                     isShieldActive = false
                     targets.removeAt(i)
                 } else {
-                    // Không có khiên -> Game Over
-                    gameOver()
+                    if (isSoundOn) {
+                        soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
+                    }
+                    isGameOver = true   // đánh dấu game kết thúc
+                    handler.postDelayed({ gameOver() }, 800)  // gọi gameOver một lần
+                    break
                 }
             }
+        }
+    }
+    private fun playSound(soundId: Int) {
+        if (!isSoundOn) return
+        val streamId = soundPool.play(soundId, 1f, 1f, 1, 0, 1f)
+        if (streamId == 0) {
+            android.util.Log.d("SOUND", "Play failed for soundId=$soundId (chưa load xong?)")
+        } else {
+            android.util.Log.d("SOUND", "Played soundId=$soundId streamId=$streamId")
         }
     }
 
     private fun playWarning(times: Int, interval: Long) {
         for (i in 0 until times) {
             handler.postDelayed({
-                soundPool.play(soundWarning, 1f, 1f, 1, 0, 1f)
+                if (isSoundOn) soundPool.play(soundWarning, 1f, 1f, 1, 0, 1f)
             }, i * interval)
         }
     }
@@ -204,6 +267,15 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         if (holder.surface.isValid) {
             canvas = holder.lockCanvas()
             canvas.drawColor(Color.BLACK)
+            if (this::musicRect.isInitialized) {
+                val musicBitmap = if (isMusicOn) musicOffBitmap else musicOnBitmap
+                canvas.drawBitmap(musicBitmap, null, musicRect, paint)
+            }
+
+            if (this::soundRect.isInitialized) {
+                val soundBitmap = if (isSoundOn) soundOffBitmap else soundOnBitmap
+                canvas.drawBitmap(soundBitmap, null, soundRect, paint)
+            }
 
             // Vẽ phi thuyền
             canvas.drawBitmap(spaceshipBitmap, spaceshipX, spaceshipY, paint)
@@ -243,37 +315,29 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         event?.let {
+            val x = event.x
+            val y = event.y
+
             when (it.action) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                    // Cập nhật vị trí phi thuyền theo ngón tay
-                    spaceshipX = it.x - spaceshipBitmap.width / 2
-                    spaceshipY = it.y - spaceshipBitmap.height / 2
+                MotionEvent.ACTION_DOWN -> {
+                    // === ƯU TIÊN KIỂM TRA ICON ===
+                    if (musicRect.contains(x, y)) {
+                        toggleMusic()
+                        return true
+                    }
+                    if (soundRect.contains(x, y)) {
+                        toggleSound()
+                        return true
+                    }
 
-                    // Kiểm tra xem ngón tay có nằm trên phi thuyền không
-                    val shipRect = RectF(
-                        spaceshipX,
-                        spaceshipY,
-                        spaceshipX + spaceshipBitmap.width,
-                        spaceshipY + spaceshipBitmap.height
-                    )
-                    isShooting = shipRect.contains(it.x, it.y)
+                    // === NẾU KHÔNG CLICK ICON => ĐIỀU KHIỂN PHI THUYỀN ===
+                    moveSpaceship(x, y)
+                }
 
-                    // ===== Giới hạn biên + phát âm thanh =====
-                    if (spaceshipX < 0) {
-                        spaceshipX = 0f
-                        soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
-                    }
-                    if (spaceshipX + spaceshipBitmap.width > screenWidth) {
-                        spaceshipX = (screenWidth - spaceshipBitmap.width).toFloat()
-                        soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
-                    }
-                    if (spaceshipY < 0) {
-                        spaceshipY = 0f
-                        soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
-                    }
-                    if (spaceshipY + spaceshipBitmap.height > screenHeight) {
-                        spaceshipY = (screenHeight - spaceshipBitmap.height).toFloat()
-                        soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
+                MotionEvent.ACTION_MOVE -> {
+                    // Chỉ di chuyển phi thuyền, không đụng icon
+                    if (!musicRect.contains(x, y) && !soundRect.contains(x, y)) {
+                        moveSpaceship(x, y)
                     }
                 }
 
@@ -284,8 +348,69 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         }
         return true
     }
+    private fun toggleMusic() {
+        isMusicOn = !isMusicOn
+        handler.post {
+            if (isMusicOn) {
+                if (!bgm.isPlaying) {
+                    bgm.start()
+                }
+            } else {
+                if (bgm.isPlaying) {
+                    bgm.pause()
+                }
+            }
+        }
+    }
+
+
+    private fun toggleSound() {
+        isSoundOn = !isSoundOn
+    }
+    private fun moveSpaceship(x: Float, y: Float) {
+        // Cập nhật vị trí phi thuyền
+        spaceshipX = x - spaceshipBitmap.width / 2
+        spaceshipY = y - spaceshipBitmap.height / 2
+
+        // Kiểm tra chạm vào phi thuyền => bắn
+        val shipRect = RectF(
+            spaceshipX,
+            spaceshipY,
+            spaceshipX + spaceshipBitmap.width,
+            spaceshipY + spaceshipBitmap.height
+        )
+        isShooting = shipRect.contains(x, y)
+
+        // Giới hạn biên + âm thanh va chạm
+        if (spaceshipX < 0) {
+            spaceshipX = 0f
+            if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
+        }
+        if (spaceshipX + spaceshipBitmap.width > screenWidth) {
+            spaceshipX = (screenWidth - spaceshipBitmap.width).toFloat()
+            if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
+        }
+        if (spaceshipY < 0) {
+            spaceshipY = 0f
+            if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
+        }
+        if (spaceshipY + spaceshipBitmap.height > screenHeight) {
+            spaceshipY = (screenHeight - spaceshipBitmap.height).toFloat()
+            if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
+        }
+    }
+
     private fun gameOver() {
         isPlaying = false
+        if (isSoundOn) {
+            // Đợi 1 giây cho âm thanh chạy rồi mới show dialog
+            handler.postDelayed({ showGameOverDialog() }, 1000)
+        } else {
+            showGameOverDialog()
+        }
+    }
+
+    private fun showGameOverDialog() {
         handler.post {
             val builder = androidx.appcompat.app.AlertDialog.Builder(context)
             builder.setTitle("Game Over")
@@ -302,19 +427,29 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         }
     }
 
-    private fun resetGame() {
+    fun resetGame() {
+        // Reset cờ trạng thái
+        isGameOver = false
+        isShieldActive = false
+        bulletBoostActive = false
+
+        // Reset các danh sách đối tượng
         bullets.clear()
         targets.clear()
         powerUps.clear()
-        frameCount = 0
-        isShooting = false
-        bulletBoostActive = false
-        isShieldActive = false
 
-        // Đặt phi thuyền lại vị trí ban đầu
-        spaceshipX = (screenWidth / 2 - spaceshipBitmap.width / 2).toFloat()
+        // Reset điểm, frameCount
+        frameCount = 0
+
+        // Đặt lại vị trí phi thuyền về giữa màn hình
+        spaceshipX = (screenWidth - spaceshipBitmap.width) / 2f
         spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
+
+        // Nếu cần spawn mục tiêu ban đầu thì làm ở đây
+        // targets.add(Target(...))
+
     }
+
 
     private fun control() {
         try {
@@ -344,30 +479,63 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         screenWidth = width
         screenHeight = height
 
-        // Scale spaceship: chiếm 1/5 chiều rộng màn hình
+        // ================= Scale spaceship =================
         val shipWidth = screenWidth / 5
         val shipHeight = shipWidth * spaceshipBitmap.height / spaceshipBitmap.width
         spaceshipBitmap = Bitmap.createScaledBitmap(spaceshipBitmap, shipWidth, shipHeight, true)
 
-        // Scale target: chiếm 1/7 chiều rộng màn hình
+        // ================= Scale target =================
         val targetWidth = screenWidth / 7
         val targetHeight = targetWidth * targetBitmap.height / targetBitmap.width
         targetBitmap = Bitmap.createScaledBitmap(targetBitmap, targetWidth, targetHeight, true)
 
-        // Scale power-ups: chiếm 1/7 chiều rộng màn hình
-        val powerWidth = screenWidth / 13
+        // ================= Scale power-ups =================
+        val powerWidth = screenWidth / 13   // chiếm ~1/13 chiều rộng màn hình
         val powerHeight = powerWidth * bulletPowerBitmap.height / bulletPowerBitmap.width
         bulletPowerBitmap = Bitmap.createScaledBitmap(bulletPowerBitmap, powerWidth, powerHeight, true)
         shieldPowerBitmap = Bitmap.createScaledBitmap(shieldPowerBitmap, powerWidth, powerHeight, true)
 
+        // ================= Scale icon music/sound =================
+        val iconWidth = screenWidth / 8
+        val iconHeight = iconWidth * musicOnBitmap.height / musicOnBitmap.width
+        musicOnBitmap = Bitmap.createScaledBitmap(musicOnBitmap, iconWidth, iconHeight, true)
+        musicOffBitmap = Bitmap.createScaledBitmap(musicOffBitmap, iconWidth, iconHeight, true)
+        soundOnBitmap = Bitmap.createScaledBitmap(soundOnBitmap, iconWidth, iconHeight, true)
+        soundOffBitmap = Bitmap.createScaledBitmap(soundOffBitmap, iconWidth, iconHeight, true)
 
-        // Vị trí ban đầu của phi thuyền
+        // Music icon ở chính giữa cạnh trái
+        val musicLeftOffset = 20f
+        musicRect = RectF(
+            musicLeftOffset,
+            (screenHeight / 2f - iconHeight / 2f),
+            musicLeftOffset + iconWidth,
+            (screenHeight / 2f + iconHeight / 2f)
+        )
+
+        // Sound icon ở chính giữa cạnh phải
+        val soundRightOffset = 20f
+        soundRect = RectF(
+            (screenWidth - iconWidth - soundRightOffset),
+            (screenHeight / 2f - iconHeight / 2f),
+            (screenWidth - soundRightOffset).toFloat(),
+            (screenHeight / 2f + iconHeight / 2f)
+        )
+
+        // ================= Vị trí ban đầu của phi thuyền =================
         spaceshipX = (screenWidth / 2 - spaceshipBitmap.width / 2).toFloat()
         spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
     }
-
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) { pause() }
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        pause()
+        if (this::bgm.isInitialized && bgm.isPlaying) {
+            bgm.stop()
+        }
+        if (this::bgm.isInitialized) {
+            bgm.release()
+        }
+    }
+
 }
 
 // =================== CLASS BULLET ===================
@@ -400,7 +568,6 @@ class Target(x: Float, y: Float, val bitmap: Bitmap) {
             position.offsetTo(position.left, -bitmap.height.toFloat())
         }
     }
-
 }
 
 // =================== CLASS POWERUP ===================
