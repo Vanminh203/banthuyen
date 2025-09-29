@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import kotlin.random.Random
 import android.os.Handler
 import android.os.Looper
+import kotlin.math.pow
 
 class GameActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,10 +59,22 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     private lateinit var bgm: MediaPlayer
     private var isMusicOn = false
 
-
-    // Thêm cơ chế
+    // Thêm cơ chế tấn công và phòng thủ mới
     private var bulletBoostActive = false
+    private var missileActive = false
+    private var laserActive = false
     private var isShieldActive = false
+    private var armorActive = false
+
+    // Bitmaps cho power-ups mới
+    private var missilePowerBitmap: Bitmap
+    private var laserPowerBitmap: Bitmap
+    private var armorPowerBitmap: Bitmap
+    private var hpPowerBitmap: Bitmap
+
+    // Danh sách cho các loại tấn công đặc biệt
+    private val missiles = mutableListOf<Missile>()
+    private val lasers = mutableListOf<Laser>()
 
     // Phi thuyền
     private var spaceshipX: Float = 0f
@@ -72,7 +85,8 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     private val bullets = mutableListOf<Bullet>()
     private val targets = mutableListOf<Target>()
 
-    val shootDelay = if (bulletBoostActive) 5 else 15
+    // HP cho phi thuyền (để hỗ trợ cơ chế armor)
+    private var spaceshipHP = 6
 
     init {
         holder.addCallback(this)
@@ -107,7 +121,10 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
 
         bulletPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.dan)
         shieldPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.khien)
-
+        missilePowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.missilepower)
+        laserPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.laserpower)
+        armorPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.armorpower)
+        hpPowerBitmap = BitmapFactory.decodeResource(resources, R.drawable.hppower)
         musicOnBitmap = BitmapFactory.decodeResource(resources, R.drawable.musicturnon)
         musicOffBitmap = BitmapFactory.decodeResource(resources, R.drawable.musicturnoff)
         soundOnBitmap = BitmapFactory.decodeResource(resources, R.drawable.soundon)
@@ -130,10 +147,22 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         frameCount++
         // Xác định delay bắn dựa trên buff
         val shootDelay = if (bulletBoostActive) 5 else 15  // bắn nhanh hơn khi có buff
-        // Bắn khi đang chạm vào phi thuyền
-        if (isShooting && frameCount % shootDelay == 0) {
+        // Bắn đạn thường chỉ khi không có missile hoặc laser active
+        if (!missileActive && !laserActive && isShooting && frameCount % shootDelay == 0) {
             bullets.add(Bullet(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
             if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
+        }
+
+        // Thêm bắn tên lửa nếu active (cơ chế tấn công 2: bắn tên lửa)
+        if (missileActive && isShooting && frameCount % 30 == 0) {
+            missiles.add(Missile(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY, targets))
+            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
+        }
+
+        // Thêm phun laser nếu active (cơ chế tấn công 3: phun laser liên tục)
+        if (laserActive && isShooting && frameCount % 10 == 0) {
+            lasers.add(Laser(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
+            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)  // Có thể dùng sound laser
         }
 
         // === Cập nhật tất cả đạn, xóa đạn ra khỏi màn hình ===
@@ -145,19 +174,51 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             }
         }
 
+        // Cập nhật tên lửa
+        for (i in missiles.size - 1 downTo 0) {
+            val m = missiles[i]
+            m.update()
+            if (m.position.bottom < 0) {
+                missiles.removeAt(i)
+            }
+        }
+
+        // Thêm phun laser nếu active
+        if (laserActive && isShooting && frameCount % 10 == 0) { // Giảm tần suất để cân bằng
+            lasers.clear() // Xóa laser cũ
+            lasers.add(Laser(spaceshipX + spaceshipBitmap.width / 2 - 2.5f, spaceshipY))
+            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
+        }
+
+        // Va chạm laser (tiêu diệt tất cả mục tiêu nằm trên đường laser)
+        // Va chạm laser (laser có thể xuyên qua nhiều mục tiêu, nhưng chỉ phía trên)
+        for (i in lasers.size - 1 downTo 0) {
+            val l = lasers[i]
+            var hitAny = false  // Track nếu hit ít nhất 1 target
+            for (j in targets.size - 1 downTo 0) {
+                val t = targets[j]
+                // Chỉ hit nếu target ở phía trên hoặc tại vị trí bắn (t.bottom <= l.spaceshipY)
+                if (t.position.bottom <= l.spaceshipY && RectF.intersects(l.position, t.position)) {
+                    targets.removeAt(j)
+                    hitAny = true
+                }
+            }
+            // Nếu không hit gì, xóa laser ngay
+            if (!hitAny) {
+                lasers.removeAt(i)
+            }
+            // Optional: Nếu muốn xóa laser sau 0.5s dù hit hay không (để không persist mãi), thêm:
+            handler.postDelayed({ lasers.remove(l) }, 200)
+        }
+
         // === Cập nhật tất cả mục tiêu ===
         for (i in targets.size - 1 downTo 0) {
             val t = targets[i]
-            // Nếu Target.update cần tham số màn hình, truyền vào tương ứng:
-            // t.update(screenWidth, screenHeight)
-            t.update(screenHeight,screenWidth)
-            // ví dụ nếu bạn muốn xóa khi rơi qua đáy:
+            t.update(screenHeight, screenWidth)
             if (t.position.top > screenHeight) {
                 targets.removeAt(i)
             } else {
-                // nếu muốn cảnh báo khi vượt 1/2 màn hình
                 if (t.position.top > screenHeight / 2 && !t.hasWarned) {
-                    // gán flag trong Target để không warn lặp vô hạn
                     t.hasWarned = true
                     val repeatTimes = (3..6).random()
                     playWarning(repeatTimes, 400)
@@ -165,17 +226,25 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             }
         }
 
-        // === Spa mục tiêu mới ===
-        if (Random.nextInt(100) < 2) {
+        // === Spawn mục tiêu mới ===
+        if (Random.nextInt(100) < 1.5) {
             val x = Random.nextInt((screenWidth - targetBitmap.width).coerceAtLeast(1)).toFloat()
             targets.add(Target(x, 0f, targetBitmap))
         }
 
         // === Sinh PowerUp ngẫu nhiên (xác suất nhỏ) ===
-        if (Random.nextInt(500) < 2) { // tỉ lệ thấp hơn target
-            val x = Random.nextInt((screenWidth - bulletPowerBitmap.width).coerceAtLeast(1)).toFloat()
-            val type = if (Random.nextBoolean()) PowerUpType.BULLET else PowerUpType.SHIELD
-            val bmp = if (type == PowerUpType.BULLET) bulletPowerBitmap else shieldPowerBitmap
+        if (Random.nextInt(500) < 2.5) { // tỉ lệ thấp hơn target
+            val x =
+                Random.nextInt((screenWidth - bulletPowerBitmap.width).coerceAtLeast(1)).toFloat()
+            val type = PowerUpType.entries.random()  // Chọn ngẫu nhiên từ enum mở rộng
+            val bmp = when (type) {
+                PowerUpType.BULLET -> bulletPowerBitmap
+                PowerUpType.SHIELD -> shieldPowerBitmap
+                PowerUpType.MISSILE -> missilePowerBitmap
+                PowerUpType.LASER -> laserPowerBitmap
+                PowerUpType.ARMOR -> armorPowerBitmap
+                PowerUpType.HP -> hpPowerBitmap
+            }
             powerUps.add(PowerUp(x, 0f, bmp, type))
         }
 
@@ -187,64 +256,140 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 powerUps.removeAt(i)
             } else {
                 // Kiểm tra va chạm với phi thuyền
-                val shipRect = RectF(spaceshipX, spaceshipY, spaceshipX + spaceshipBitmap.width, spaceshipY + spaceshipBitmap.height)
+                val shipRect = RectF(
+                    spaceshipX,
+                    spaceshipY,
+                    spaceshipX + spaceshipBitmap.width,
+                    spaceshipY + spaceshipBitmap.height
+                )
                 if (RectF.intersects(p.position, shipRect)) {
-                    if (p.type == PowerUpType.BULLET) {
-                        bulletBoostActive = true
-                        // Hủy bỏ timer cũ nếu có
-                        bulletBoostRunnable?.let { handler.removeCallbacks(it) }
-                        // Tạo timer mới
-                        bulletBoostRunnable = Runnable { bulletBoostActive = false }
-                        handler.postDelayed({ bulletBoostActive = false }, 5000) // hiệu lực 5s
-                    } else if (p.type == PowerUpType.SHIELD) {
-                        isShieldActive = true
-                        handler.postDelayed({ isShieldActive = false }, 5000)
+                    when (p.type) {
+                        PowerUpType.BULLET -> {
+                            bulletBoostActive = true
+                            missileActive = false
+                            laserActive = false
+                            bulletBoostRunnable?.let { handler.removeCallbacks(it) }
+                            bulletBoostRunnable = Runnable { bulletBoostActive = false }
+                            handler.postDelayed(bulletBoostRunnable!!, 5000)
+                        }
+
+                        PowerUpType.MISSILE -> {
+                            missileActive = true
+                            bulletBoostActive = false
+                            laserActive = false
+                            handler.postDelayed({ missileActive = false }, 5000)
+                        }
+
+                        PowerUpType.LASER -> {
+                            laserActive = true
+                            missileActive = false
+                            bulletBoostActive = false
+                            handler.postDelayed({ laserActive = false }, 5000)
+                        }
+
+                        PowerUpType.SHIELD -> {
+                            isShieldActive = true
+                            armorActive = false // Vô hiệu hóa các phòng thủ khác
+                            handler.postDelayed({ isShieldActive = false }, 5000)
+                        }
+
+                        PowerUpType.ARMOR -> {
+                            armorActive = true
+                            isShieldActive = false // Vô hiệu hóa các phòng thủ khác
+                            handler.postDelayed({ armorActive = false }, 5000)
+                        }
+                        PowerUpType.HP -> {
+                            spaceshipHP = minOf(spaceshipHP + 1, 6)  // +1 HP, cap max
+                        }
                     }
-                    if (isSoundOn && soundLoaded[soundPowerUp] == true ) playSound(soundPowerUp)
+                    if (isSoundOn && soundLoaded[soundPowerUp] == true) playSound(soundPowerUp)
                     powerUps.removeAt(i)
                 }
             }
         }
 
-        // === Va chạm: mỗi viên đạn chỉ tiêu diệt 1 mục tiêu ===
+// === Va chạm: mỗi viên đạn chỉ tiêu diệt 1 mục tiêu ===
         for (i in bullets.size - 1 downTo 0) {
             val b = bullets[i]
             var hit = false
             for (j in targets.size - 1 downTo 0) {
                 val t = targets[j]
                 if (RectF.intersects(b.position, t.position)) {
-                    // Xử lý va chạm: xóa đúng viên đạn và đúng target
                     bullets.removeAt(i)
                     targets.removeAt(j)
-
-                    // TODO: hiệu ứng nổ / tăng điểm / sound
-                    // score += 10
-                    //soundPool.play(soundExplosion, 1f, 1f, 1, 0, 1f)
                     hit = true
                     break
                 }
             }
             if (hit) continue
         }
-        // Kiểm tra phi thuyền va chạm mục tiêu
-        val shipRect = RectF(spaceshipX, spaceshipY, spaceshipX + spaceshipBitmap.width, spaceshipY + spaceshipBitmap.height)
-        for (i in targets.size - 1 downTo 0) {
-            val t = targets[i]
-            if (RectF.intersects(t.position, shipRect)) {
-                if (isShieldActive) {
-                    isShieldActive = false
-                    targets.removeAt(i)
-                } else {
-                    if (isSoundOn) {
-                        soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
-                    }
-                    isGameOver = true   // đánh dấu game kết thúc
-                    handler.postDelayed({ gameOver() }, 800)  // gọi gameOver một lần
+
+// Va chạm tên lửa
+        for (i in missiles.size - 1 downTo 0) {
+            val m = missiles[i]
+            var hit = false
+            for (j in targets.size - 1 downTo 0) {
+                val t = targets[j]
+                if (RectF.intersects(m.position, t.position)) {
+                    missiles.removeAt(i)
+                    targets.removeAt(j)
+                    hit = true
                     break
                 }
             }
+            if (hit) continue
+        }
+
+// Va chạm laser (laser có thể xuyên qua nhiều mục tiêu)
+        for (i in lasers.size - 1 downTo 0) {
+            val l = lasers[i]
+            for (j in targets.size - 1 downTo 0) {
+                val t = targets[j]
+                if (RectF.intersects(l.position, t.position)) {
+                    targets.removeAt(j)
+                }
+            }
+        }
+
+// Kiểm tra phi thuyền va chạm mục tiêu
+        val shipRect = RectF(
+            spaceshipX,
+            spaceshipY,
+            spaceshipX + spaceshipBitmap.width,
+            spaceshipY + spaceshipBitmap.height
+        )
+        for (i in targets.size - 1 downTo 0) {
+            val t = targets[i]
+            if (RectF.intersects(t.position, shipRect)) {
+                targets.removeAt(i)
+                if (isShieldActive) {
+                    isShieldActive = false // Vô hiệu hóa shield sau một lần sử dụng
+                } else if (armorActive) {
+                    spaceshipHP -= 1 // Giảm HP
+                    armorActive = false // Vô hiệu hóa armor sau một lần sử dụng
+                    if (spaceshipHP <= 0) {
+                        if (isSoundOn) soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
+                        isGameOver = true
+                        handler.postDelayed({ gameOver() }, 800)
+                    }
+                }  else {
+                    spaceshipHP -= 3 // Giảm HP
+                    if (spaceshipHP <= 0) {
+                        if (isSoundOn) soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
+                        isGameOver = true
+                        handler.postDelayed({ gameOver() }, 800)
+                    }
+                }
+                break
+            }
         }
     }
+
+    private fun findNearestTarget(): Target? {
+        if (targets.isEmpty()) return null
+        return targets.minByOrNull { (it.position.top - spaceshipY).pow(2) + (it.position.left - spaceshipX).pow(2) }
+    }
+
     private fun playSound(soundId: Int) {
         if (!isSoundOn) return
         val streamId = soundPool.play(soundId, 1f, 1f, 1, 0, 1f)
@@ -268,14 +413,49 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             canvas = holder.lockCanvas()
             canvas.drawColor(Color.BLACK)
             if (this::musicRect.isInitialized) {
-                val musicBitmap = if (isMusicOn) musicOffBitmap else musicOnBitmap
+                val musicBitmap = if (isMusicOn) musicOnBitmap else musicOffBitmap
                 canvas.drawBitmap(musicBitmap, null, musicRect, paint)
             }
 
             if (this::soundRect.isInitialized) {
-                val soundBitmap = if (isSoundOn) soundOffBitmap else soundOnBitmap
+                val soundBitmap = if (isSoundOn) soundOnBitmap else soundOffBitmap
                 canvas.drawBitmap(soundBitmap, null, soundRect, paint)
             }
+            // Vẽ thanh máu (HP bar)
+            val hpMax = 6f  // HP tối đa
+            val hpCurrent = spaceshipHP.toFloat()
+            val barWidth = 200f  // Chiều rộng thanh
+            val barHeight = 100f  // Chiều cao thanh
+            val barX = 20f  // Vị trí X
+            val barY = 200f  // Vị trí Y (góc trên trái)
+
+            // Vẽ nền thanh (đỏ)
+            paint.color = Color.RED
+            canvas.drawRect(barX, barY, barX + barWidth, barY + barHeight, paint)
+
+            // Vẽ phần HP còn lại (xanh)
+            paint.color = Color.GREEN
+            val hpFillWidth = (hpCurrent.toFloat() / hpMax) * barWidth
+            canvas.drawRect(barX, barY, barX + hpFillWidth, barY + barHeight, paint)
+
+            // Vẽ text HP lên trên thanh (căn giữa)
+            paint.color = Color.BLACK
+            paint.textSize = 40f
+            paint.textAlign = Paint.Align.LEFT  // mặc định là LEFT
+            fun formatNumber(value: Float): String {
+                return if (value % 1 == 0f) value.toInt().toString() else value.toString()
+            }
+            val text = "HP: ${formatNumber(hpCurrent)} / ${formatNumber(hpMax)}"
+
+            // Đo kích thước text
+            val textBounds = Rect()
+            paint.getTextBounds(text, 0, text.length, textBounds)
+
+            // Tính toạ độ để text nằm giữa thanh
+            val textX = barX + (barWidth - textBounds.width()) / 2f
+            val textY = barY + (barHeight + textBounds.height()) / 2f
+
+            canvas.drawText(text, textX, textY, paint)
 
             // Vẽ phi thuyền
             canvas.drawBitmap(spaceshipBitmap, spaceshipX, spaceshipY, paint)
@@ -284,6 +464,25 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             paint.color = Color.WHITE
             for (bullet in bullets) {
                 canvas.drawRect(bullet.position, paint)
+            }
+
+            // Vẽ tên lửa (giả sử vẽ hình chữ nhật đỏ cho missile)
+            paint.color = Color.RED
+            for (missile in missiles) {
+                canvas.drawRect(missile.position, paint)
+            }
+
+            // Vẽ laser (đường xanh thẳng từ phi thuyền đến y=0)
+            paint.color = Color.BLUE
+            paint.strokeWidth = 5f
+            for (laser in lasers) {
+                canvas.drawLine(
+                    laser.x,
+                    laser.spaceshipY,
+                    laser.x,
+                    0f,
+                    paint
+                )
             }
 
             // Vẽ mục tiêu
@@ -299,7 +498,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             // Nếu có khiên, vẽ vòng tròn xanh quanh phi thuyền
             if (isShieldActive) {
                 paint.style = Paint.Style.STROKE
-                paint.color = Color.CYAN
+                paint.color = Color.GREEN
                 paint.strokeWidth = 8f
                 canvas.drawCircle(
                     spaceshipX + spaceshipBitmap.width / 2,
@@ -309,6 +508,26 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 )
                 paint.style = Paint.Style.FILL
             }
+
+            // Vẽ giáp (nếu active, vẽ vòng vàng)
+            if (armorActive) {
+                paint.style = Paint.Style.STROKE
+                paint.color = Color.YELLOW
+                paint.strokeWidth = 8f
+                canvas.drawCircle(
+                    spaceshipX + spaceshipBitmap.width / 2,
+                    spaceshipY + spaceshipBitmap.height / 2,
+                    spaceshipBitmap.width.toFloat(),
+                    paint
+                )
+                paint.style = Paint.Style.FILL
+            }
+
+            // Vẽ HP (text đơn giản)
+            paint.color = Color.WHITE
+            paint.textSize = 40f
+
+            canvas.drawText(text, 20f, 60f, paint)
             holder.unlockCanvasAndPost(canvas)
         }
     }
@@ -432,9 +651,17 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         isGameOver = false
         isShieldActive = false
         bulletBoostActive = false
+        missileActive = false
+        laserActive = false
+        armorActive = false
+
+        // Reset HP
+        spaceshipHP = 6
 
         // Reset các danh sách đối tượng
         bullets.clear()
+        missiles.clear()
+        lasers.clear()
         targets.clear()
         powerUps.clear()
 
@@ -444,12 +671,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         // Đặt lại vị trí phi thuyền về giữa màn hình
         spaceshipX = (screenWidth - spaceshipBitmap.width) / 2f
         spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
-
-        // Nếu cần spawn mục tiêu ban đầu thì làm ở đây
-        // targets.add(Target(...))
-
     }
-
 
     private fun control() {
         try {
@@ -494,6 +716,10 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         val powerHeight = powerWidth * bulletPowerBitmap.height / bulletPowerBitmap.width
         bulletPowerBitmap = Bitmap.createScaledBitmap(bulletPowerBitmap, powerWidth, powerHeight, true)
         shieldPowerBitmap = Bitmap.createScaledBitmap(shieldPowerBitmap, powerWidth, powerHeight, true)
+        missilePowerBitmap = Bitmap.createScaledBitmap(missilePowerBitmap, powerWidth, powerHeight, true)
+        laserPowerBitmap = Bitmap.createScaledBitmap(laserPowerBitmap, powerWidth, powerHeight, true)
+        armorPowerBitmap = Bitmap.createScaledBitmap(armorPowerBitmap, powerWidth, powerHeight, true)
+        hpPowerBitmap = Bitmap.createScaledBitmap(hpPowerBitmap, powerWidth, powerHeight, true)
 
         // ================= Scale icon music/sound =================
         val iconWidth = screenWidth / 8
@@ -552,6 +778,48 @@ class Bullet(x: Float, y: Float) {
     }
 }
 
+// =================== CLASS MISSILE (Cơ chế tấn công 2: Tên lửa tự dẫn) ===================
+class Missile(x: Float, y: Float, private val targets: MutableList<Target>) {
+    val position: RectF
+    private val speed = 30f
+
+    init {
+        position = RectF(x, y, x + 15, y + 40) // lớn hơn đạn thường
+    }
+
+    fun update() {
+        // Tìm mục tiêu gần nhất dựa trên khoảng cách Euclidean
+        val nearestTarget = targets.minByOrNull {
+            val dx = it.position.centerX() - position.centerX()
+            val dy = it.position.centerY() - position.centerY()
+            (dx * dx + dy * dy) // Bình phương khoảng cách
+        }
+
+        if (nearestTarget != null) {
+            val dx = nearestTarget.position.centerX() - position.centerX()
+            val dy = nearestTarget.position.centerY() - position.centerY()
+            val dist = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+            if (dist > 0) {
+                val vx = (dx / dist) * speed / 2 // Tốc độ homing
+                val vy = (dy / dist) * speed / 2 // Không ưu tiên bay lên
+                position.offset(vx, vy)
+            } else {
+                position.offset(0f, -speed) // Bay thẳng nếu mục tiêu trùng vị trí
+            }
+        } else {
+            position.offset(0f, -speed) // Bay thẳng nếu không có mục tiêu
+        }
+    }
+}
+
+// =================== CLASS LASER (Cơ chế tấn công 3: Laser liên tục) ===================
+class Laser(val x: Float, val spaceshipY: Float) {
+    val position: RectF
+    init {
+        position = RectF(x, 0f, x + 5f, spaceshipY) // Đường từ phi thuyền đến y=0
+    }
+}
+
 // =================== CLASS TARGET ===================
 class Target(x: Float, y: Float, val bitmap: Bitmap) {
     val position: RectF
@@ -571,7 +839,7 @@ class Target(x: Float, y: Float, val bitmap: Bitmap) {
 }
 
 // =================== CLASS POWERUP ===================
-enum class PowerUpType { BULLET, SHIELD }
+enum class PowerUpType { BULLET, MISSILE, LASER, SHIELD, ARMOR, HP }
 
 class PowerUp(x: Float, y: Float, val bitmap: Bitmap, val type: PowerUpType) {
     val position: RectF
