@@ -1,6 +1,7 @@
 package com.example.banthuyen
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.*
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -13,7 +14,8 @@ import androidx.appcompat.app.AppCompatActivity
 import kotlin.random.Random
 import android.os.Handler
 import android.os.Looper
-import kotlin.math.pow
+import kotlin.math.min
+import androidx.core.graphics.scale
 
 class GameActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,6 +23,7 @@ class GameActivity : AppCompatActivity() {
         setContentView(GameView(this))
     }
 }
+
 class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder.Callback {
     private var isPlaying = false
     private lateinit var gameThread: Thread
@@ -43,6 +46,8 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     private var soundShipExplosion = 0
     private val soundLoaded = mutableMapOf<Int, Boolean>()
     private var isGameOver = false
+    private var gameOverImage: Bitmap? = null
+    private var highScore = 0
 
     // Bitmap toggle nhạc nền
     private var musicOnBitmap: Bitmap
@@ -85,8 +90,19 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
     private val bullets = mutableListOf<Bullet>()
     private val targets = mutableListOf<Target>()
 
-    // HP cho phi thuyền (để hỗ trợ cơ chế armor)
+    // HP cho phi thuyền
     private var spaceshipHP = 6
+
+    // HUD: Thêm biến cho điểm số và thời gian chơi
+    private var score = 0
+    private var startTime = System.currentTimeMillis()
+
+    // Game Over: Bitmaps và nút
+    private var youLoseBitmap: Bitmap
+    private var gameOverBitmap: Bitmap
+    private lateinit var replayButtonRect: RectF
+    private lateinit var homeButtonRect: RectF
+    private lateinit var highScoresButtonRect: RectF
 
     init {
         holder.addCallback(this)
@@ -94,6 +110,12 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         targetBitmap = BitmapFactory.decodeResource(resources, R.drawable.muctieu)
         bulletsBitmap = BitmapFactory.decodeResource(resources, R.drawable.dan)
         paint = Paint()
+        val prefs = context.getSharedPreferences("GamePrefs", Context.MODE_PRIVATE)
+        highScore = prefs.getInt("highScore", 0)
+
+        // Tải bitmaps cho Game Over
+        youLoseBitmap = BitmapFactory.decodeResource(resources, R.drawable.youlose)
+        gameOverBitmap = BitmapFactory.decodeResource(resources, R.drawable.gameover)
 
         // SoundPool
         val audioAttributes = AudioAttributes.Builder()
@@ -146,26 +168,23 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         if (isGameOver) return
         frameCount++
         // Xác định delay bắn dựa trên buff
-        val shootDelay = if (bulletBoostActive) 5 else 15  // bắn nhanh hơn khi có buff
-        // Bắn đạn thường chỉ khi không có missile hoặc laser active
+        val shootDelay = if (bulletBoostActive) 5 else 15
         if (!missileActive && !laserActive && isShooting && frameCount % shootDelay == 0) {
             bullets.add(Bullet(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
             if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
         }
 
-        // Thêm bắn tên lửa nếu active (cơ chế tấn công 2: bắn tên lửa)
         if (missileActive && isShooting && frameCount % 30 == 0) {
             missiles.add(Missile(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY, targets))
             if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
         }
 
-        // Thêm phun laser nếu active (cơ chế tấn công 3: phun laser liên tục)
         if (laserActive && isShooting && frameCount % 10 == 0) {
             lasers.add(Laser(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
-            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)  // Có thể dùng sound laser
+            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
         }
 
-        // === Cập nhật tất cả đạn, xóa đạn ra khỏi màn hình ===
+        // Cập nhật đạn
         for (i in bullets.size - 1 downTo 0) {
             val b = bullets[i]
             b.update()
@@ -183,35 +202,25 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             }
         }
 
-        // Thêm phun laser nếu active
-        if (laserActive && isShooting && frameCount % 10 == 0) { // Giảm tần suất để cân bằng
-            lasers.clear() // Xóa laser cũ
-            lasers.add(Laser(spaceshipX + spaceshipBitmap.width / 2 - 2.5f, spaceshipY))
-            if (isSoundOn) soundPool.play(soundShoot, 1f, 1f, 1, 0, 1f)
-        }
-
-        // Va chạm laser (tiêu diệt tất cả mục tiêu nằm trên đường laser)
-        // Va chạm laser (laser có thể xuyên qua nhiều mục tiêu, nhưng chỉ phía trên)
+        // Cập nhật laser
         for (i in lasers.size - 1 downTo 0) {
             val l = lasers[i]
-            var hitAny = false  // Track nếu hit ít nhất 1 target
+            var hitAny = false
             for (j in targets.size - 1 downTo 0) {
                 val t = targets[j]
-                // Chỉ hit nếu target ở phía trên hoặc tại vị trí bắn (t.bottom <= l.spaceshipY)
                 if (t.position.bottom <= l.spaceshipY && RectF.intersects(l.position, t.position)) {
                     targets.removeAt(j)
                     hitAny = true
+                    score += 10 // Tăng điểm khi tiêu diệt mục tiêu
                 }
             }
-            // Nếu không hit gì, xóa laser ngay
             if (!hitAny) {
                 lasers.removeAt(i)
             }
-            // Optional: Nếu muốn xóa laser sau 0.5s dù hit hay không (để không persist mãi), thêm:
             handler.postDelayed({ lasers.remove(l) }, 200)
         }
 
-        // === Cập nhật tất cả mục tiêu ===
+        // Cập nhật mục tiêu
         for (i in targets.size - 1 downTo 0) {
             val t = targets[i]
             t.update(screenHeight, screenWidth)
@@ -226,17 +235,16 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             }
         }
 
-        // === Spawn mục tiêu mới ===
+        // Spawn mục tiêu mới
         if (Random.nextInt(100) < 1.5) {
             val x = Random.nextInt((screenWidth - targetBitmap.width).coerceAtLeast(1)).toFloat()
             targets.add(Target(x, 0f, targetBitmap))
         }
 
-        // === Sinh PowerUp ngẫu nhiên (xác suất nhỏ) ===
-        if (Random.nextInt(500) < 2.5) { // tỉ lệ thấp hơn target
-            val x =
-                Random.nextInt((screenWidth - bulletPowerBitmap.width).coerceAtLeast(1)).toFloat()
-            val type = PowerUpType.entries.random()  // Chọn ngẫu nhiên từ enum mở rộng
+        // Sinh PowerUp
+        if (Random.nextInt(500) < 2.5) {
+            val x = Random.nextInt((screenWidth - bulletPowerBitmap.width).coerceAtLeast(1)).toFloat()
+            val type = PowerUpType.entries.random()
             val bmp = when (type) {
                 PowerUpType.BULLET -> bulletPowerBitmap
                 PowerUpType.SHIELD -> shieldPowerBitmap
@@ -248,14 +256,13 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             powerUps.add(PowerUp(x, 0f, bmp, type))
         }
 
-        // === Cập nhật PowerUp ===
+        // Cập nhật PowerUp
         for (i in powerUps.size - 1 downTo 0) {
             val p = powerUps[i]
             p.update(screenHeight)
             if (p.position.top > screenHeight) {
                 powerUps.removeAt(i)
             } else {
-                // Kiểm tra va chạm với phi thuyền
                 val shipRect = RectF(
                     spaceshipX,
                     spaceshipY,
@@ -272,34 +279,30 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                             bulletBoostRunnable = Runnable { bulletBoostActive = false }
                             handler.postDelayed(bulletBoostRunnable!!, 5000)
                         }
-
                         PowerUpType.MISSILE -> {
                             missileActive = true
                             bulletBoostActive = false
                             laserActive = false
                             handler.postDelayed({ missileActive = false }, 5000)
                         }
-
                         PowerUpType.LASER -> {
                             laserActive = true
                             missileActive = false
                             bulletBoostActive = false
                             handler.postDelayed({ laserActive = false }, 5000)
                         }
-
                         PowerUpType.SHIELD -> {
                             isShieldActive = true
-                            armorActive = false // Vô hiệu hóa các phòng thủ khác
+                            armorActive = false
                             handler.postDelayed({ isShieldActive = false }, 5000)
                         }
-
                         PowerUpType.ARMOR -> {
                             armorActive = true
-                            isShieldActive = false // Vô hiệu hóa các phòng thủ khác
+                            isShieldActive = false
                             handler.postDelayed({ armorActive = false }, 5000)
                         }
                         PowerUpType.HP -> {
-                            spaceshipHP = minOf(spaceshipHP + 1, 6)  // +1 HP, cap max
+                            spaceshipHP = min(spaceshipHP + 1, 6)
                         }
                     }
                     if (isSoundOn && soundLoaded[soundPowerUp] == true) playSound(soundPowerUp)
@@ -308,7 +311,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             }
         }
 
-// === Va chạm: mỗi viên đạn chỉ tiêu diệt 1 mục tiêu ===
+        // Va chạm đạn
         for (i in bullets.size - 1 downTo 0) {
             val b = bullets[i]
             var hit = false
@@ -317,6 +320,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 if (RectF.intersects(b.position, t.position)) {
                     bullets.removeAt(i)
                     targets.removeAt(j)
+                    score += 10 // Tăng điểm khi tiêu diệt mục tiêu
                     hit = true
                     break
                 }
@@ -324,7 +328,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             if (hit) continue
         }
 
-// Va chạm tên lửa
+        // Va chạm tên lửa
         for (i in missiles.size - 1 downTo 0) {
             val m = missiles[i]
             var hit = false
@@ -333,6 +337,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 if (RectF.intersects(m.position, t.position)) {
                     missiles.removeAt(i)
                     targets.removeAt(j)
+                    score += 10 // Tăng điểm khi tiêu diệt mục tiêu
                     hit = true
                     break
                 }
@@ -340,18 +345,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             if (hit) continue
         }
 
-// Va chạm laser (laser có thể xuyên qua nhiều mục tiêu)
-        for (i in lasers.size - 1 downTo 0) {
-            val l = lasers[i]
-            for (j in targets.size - 1 downTo 0) {
-                val t = targets[j]
-                if (RectF.intersects(l.position, t.position)) {
-                    targets.removeAt(j)
-                }
-            }
-        }
-
-// Kiểm tra phi thuyền va chạm mục tiêu
+        // Va chạm phi thuyền
         val shipRect = RectF(
             spaceshipX,
             spaceshipY,
@@ -363,21 +357,30 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             if (RectF.intersects(t.position, shipRect)) {
                 targets.removeAt(i)
                 if (isShieldActive) {
-                    isShieldActive = false // Vô hiệu hóa shield sau một lần sử dụng
+                    isShieldActive = false
                 } else if (armorActive) {
-                    spaceshipHP -= 1 // Giảm HP
-                    armorActive = false // Vô hiệu hóa armor sau một lần sử dụng
+                    spaceshipHP -= 1
+                    armorActive = false
                     if (spaceshipHP <= 0) {
                         if (isSoundOn) soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
                         isGameOver = true
-                        handler.postDelayed({ gameOver() }, 800)
-                    }
-                }  else {
-                    spaceshipHP -= 3 // Giảm HP
+                        if (score > highScore) {
+                            highScore = score
+                            val prefs = context.getSharedPreferences("GamePrefs", Context.MODE_PRIVATE)
+                            prefs.edit().putInt("highScore", highScore).apply()
+                        }
+                        gameOverImage = if (Random.nextBoolean()) youLoseBitmap else gameOverBitmap                    }
+                } else {
+                    spaceshipHP -= 3
                     if (spaceshipHP <= 0) {
                         if (isSoundOn) soundPool.play(soundShipExplosion, 1f, 1f, 1, 0, 1f)
                         isGameOver = true
-                        handler.postDelayed({ gameOver() }, 800)
+                        if (score > highScore) {
+                            highScore = score
+                            val prefs = context.getSharedPreferences("GamePrefs", Context.MODE_PRIVATE)
+                            prefs.edit().putInt("highScore", highScore).apply()
+                        }
+                        gameOverImage = if (Random.nextBoolean()) youLoseBitmap else gameOverBitmap
                     }
                 }
                 break
@@ -385,16 +388,11 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         }
     }
 
-    private fun findNearestTarget(): Target? {
-        if (targets.isEmpty()) return null
-        return targets.minByOrNull { (it.position.top - spaceshipY).pow(2) + (it.position.left - spaceshipX).pow(2) }
-    }
-
     private fun playSound(soundId: Int) {
         if (!isSoundOn) return
         val streamId = soundPool.play(soundId, 1f, 1f, 1, 0, 1f)
         if (streamId == 0) {
-            android.util.Log.d("SOUND", "Play failed for soundId=$soundId (chưa load xong?)")
+            android.util.Log.d("SOUND", "Play failed for soundId=$soundId")
         } else {
             android.util.Log.d("SOUND", "Played soundId=$soundId streamId=$streamId")
         }
@@ -412,23 +410,47 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         if (holder.surface.isValid) {
             canvas = holder.lockCanvas()
             canvas.drawColor(Color.BLACK)
-            if (this::musicRect.isInitialized) {
-                val musicBitmap = if (isMusicOn) musicOnBitmap else musicOffBitmap
-                canvas.drawBitmap(musicBitmap, null, musicRect, paint)
+
+            if (isGameOver) {
+                // Vẽ màn hình Game Over
+                if (gameOverImage != null) {
+                    val imageWidth = screenWidth / 2
+                    val imageHeight = imageWidth * gameOverImage!!.height / gameOverImage!!.width
+                    val imageRect = RectF(
+                        (screenWidth - imageWidth) / 2f,
+                        (screenHeight - imageHeight) / 2f - 100,
+                        (screenWidth + imageWidth) / 2f,
+                        (screenHeight + imageHeight) / 2f - 100
+                    )
+                    canvas.drawBitmap(gameOverImage!!, null, imageRect, paint)
+                }
+
+                // Vẽ các nút
+                paint.color = Color.GRAY
+                paint.style = Paint.Style.FILL
+                canvas.drawRect(replayButtonRect, paint)
+                canvas.drawRect(homeButtonRect, paint)
+                canvas.drawRect(highScoresButtonRect, paint)
+
+                paint.color = Color.WHITE
+                paint.textSize = 50f
+                paint.textAlign = Paint.Align.CENTER
+                canvas.drawText("Replay", replayButtonRect.centerX(), replayButtonRect.centerY() + 15, paint)
+                canvas.drawText("Home", homeButtonRect.centerX(), homeButtonRect.centerY() + 15, paint)
+                canvas.drawText("High Scores", highScoresButtonRect.centerX(), highScoresButtonRect.centerY() + 15, paint)
+
+                holder.unlockCanvasAndPost(canvas)
+                return
             }
 
-            if (this::soundRect.isInitialized) {
-                val soundBitmap = if (isSoundOn) soundOnBitmap else soundOffBitmap
-                canvas.drawBitmap(soundBitmap, null, soundRect, paint)
-            }
-            // Vẽ thanh máu (HP bar)
-            val hpMax = 6f  // HP tối đa
+            // Vẽ HUD
+            // 1. Thanh HP
+            val hpMax = 6f
             val hpCurrent = spaceshipHP.toFloat()
-            val barWidth = 200f  // Chiều rộng thanh
-            val barHeight = 100f  // Chiều cao thanh
-            val barX = 20f  // Vị trí X
-            val barY = 200f  // Vị trí Y (góc trên trái)
-
+            val barWidth = 200f
+            val barHeight = 100f
+            val barX = 20f
+            val barY = 200f
             // Vẽ nền thanh (đỏ)
             paint.color = Color.RED
             canvas.drawRect(barX, barY, barX + barWidth, barY + barHeight, paint)
@@ -439,8 +461,8 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             canvas.drawRect(barX, barY, barX + hpFillWidth, barY + barHeight, paint)
 
             // Vẽ text HP lên trên thanh (căn giữa)
-            paint.color = Color.BLACK
-            paint.textSize = 40f
+            paint.color = Color.YELLOW
+            paint.textSize = 50f
             paint.textAlign = Paint.Align.LEFT  // mặc định là LEFT
             fun formatNumber(value: Float): String {
                 return if (value % 1 == 0f) value.toInt().toString() else value.toString()
@@ -457,6 +479,20 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
 
             canvas.drawText(text, textX, textY, paint)
 
+            // 2. Điểm số
+            paint.textAlign = Paint.Align.RIGHT
+            canvas.drawText("Score: $score", screenWidth - 20f, 200f, paint)
+
+            // 3. Thời gian chơi
+            val elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000
+            canvas.drawText("Time: $elapsedSeconds s", screenWidth - 20f, 250f, paint)
+
+            // Vẽ các nút điều khiển âm thanh
+            val musicBitmap = if (isMusicOn) musicOnBitmap else musicOffBitmap
+            canvas.drawBitmap(musicBitmap, null, musicRect, paint)
+            val soundBitmap = if (isSoundOn) soundOnBitmap else soundOffBitmap
+            canvas.drawBitmap(soundBitmap, null, soundRect, paint)
+
             // Vẽ phi thuyền
             canvas.drawBitmap(spaceshipBitmap, spaceshipX, spaceshipY, paint)
 
@@ -466,13 +502,13 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 canvas.drawRect(bullet.position, paint)
             }
 
-            // Vẽ tên lửa (giả sử vẽ hình chữ nhật đỏ cho missile)
+            // Vẽ tên lửa
             paint.color = Color.RED
             for (missile in missiles) {
                 canvas.drawRect(missile.position, paint)
             }
 
-            // Vẽ laser (đường xanh thẳng từ phi thuyền đến y=0)
+            // Vẽ laser
             paint.color = Color.BLUE
             paint.strokeWidth = 5f
             for (laser in lasers) {
@@ -495,7 +531,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 canvas.drawBitmap(p.bitmap, p.position.left, p.position.top, paint)
             }
 
-            // Nếu có khiên, vẽ vòng tròn xanh quanh phi thuyền
+            // Vẽ khiên
             if (isShieldActive) {
                 paint.style = Paint.Style.STROKE
                 paint.color = Color.GREEN
@@ -509,7 +545,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 paint.style = Paint.Style.FILL
             }
 
-            // Vẽ giáp (nếu active, vẽ vòng vàng)
+            // Vẽ giáp
             if (armorActive) {
                 paint.style = Paint.Style.STROKE
                 paint.color = Color.YELLOW
@@ -523,13 +559,38 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                 paint.style = Paint.Style.FILL
             }
 
-            // Vẽ HP (text đơn giản)
-            paint.color = Color.WHITE
-            paint.textSize = 40f
-
-            canvas.drawText(text, 20f, 60f, paint)
             holder.unlockCanvasAndPost(canvas)
         }
+    }
+
+    fun resetGame() {
+        // Reset cờ trạng thái
+        isGameOver = false
+        isShieldActive = false
+        bulletBoostActive = false
+        missileActive = false
+        laserActive = false
+        armorActive = false
+        gameOverImage = null
+
+        // Reset HP
+        spaceshipHP = 6
+
+        // Reset các danh sách đối tượng
+        bullets.clear()
+        missiles.clear()
+        lasers.clear()
+        targets.clear()
+        powerUps.clear()
+
+        // Reset điểm, thời gian và frameCount
+        score = 0
+        startTime = System.currentTimeMillis()
+        frameCount = 0
+
+        // Đặt lại vị trí phi thuyền về giữa màn hình
+        spaceshipX = (screenWidth - spaceshipBitmap.width) / 2f
+        spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -539,7 +600,27 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
 
             when (it.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    // === ƯU TIÊN KIỂM TRA ICON ===
+                    if (isGameOver) {
+                        if (replayButtonRect.contains(x, y)) {
+                            resetGame()
+                            resume()
+                            return true
+                        } else if (homeButtonRect.contains(x, y)) {
+                            val intent = Intent(context, MainActivity::class.java)  // Thay MainActivity bằng tên Activity menu chính của bạn
+                            context.startActivity(intent)
+                            (context as AppCompatActivity).finish()  // Kết thúc GameActivity
+                            return true
+                            return true
+                        } else if (highScoresButtonRect.contains(x, y)) {
+                            val builder = androidx.appcompat.app.AlertDialog.Builder(context)
+                            builder.setTitle("High Scores")
+                            builder.setMessage("Điểm cao nhất: $highScore\nĐiểm hiện tại: $score")
+                            builder.setPositiveButton("OK") { _, _ -> }
+                            builder.show()
+                            return true
+                        }
+                    }
+
                     if (musicRect.contains(x, y)) {
                         toggleMusic()
                         return true
@@ -549,12 +630,10 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
                         return true
                     }
 
-                    // === NẾU KHÔNG CLICK ICON => ĐIỀU KHIỂN PHI THUYỀN ===
                     moveSpaceship(x, y)
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    // Chỉ di chuyển phi thuyền, không đụng icon
                     if (!musicRect.contains(x, y) && !soundRect.contains(x, y)) {
                         moveSpaceship(x, y)
                     }
@@ -567,6 +646,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         }
         return true
     }
+
     private fun toggleMusic() {
         isMusicOn = !isMusicOn
         handler.post {
@@ -582,16 +662,13 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         }
     }
 
-
     private fun toggleSound() {
         isSoundOn = !isSoundOn
     }
+
     private fun moveSpaceship(x: Float, y: Float) {
-        // Cập nhật vị trí phi thuyền
         spaceshipX = x - spaceshipBitmap.width / 2
         spaceshipY = y - spaceshipBitmap.height / 2
-
-        // Kiểm tra chạm vào phi thuyền => bắn
         val shipRect = RectF(
             spaceshipX,
             spaceshipY,
@@ -600,7 +677,6 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         )
         isShooting = shipRect.contains(x, y)
 
-        // Giới hạn biên + âm thanh va chạm
         if (spaceshipX < 0) {
             spaceshipX = 0f
             if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
@@ -617,60 +693,6 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             spaceshipY = (screenHeight - spaceshipBitmap.height).toFloat()
             if (isSoundOn) soundPool.play(soundHitWall, 1f, 1f, 1, 0, 1f)
         }
-    }
-
-    private fun gameOver() {
-        isPlaying = false
-        if (isSoundOn) {
-            // Đợi 1 giây cho âm thanh chạy rồi mới show dialog
-            handler.postDelayed({ showGameOverDialog() }, 1000)
-        } else {
-            showGameOverDialog()
-        }
-    }
-
-    private fun showGameOverDialog() {
-        handler.post {
-            val builder = androidx.appcompat.app.AlertDialog.Builder(context)
-            builder.setTitle("Game Over")
-            builder.setMessage("Bạn đã thua! Muốn chơi lại không?")
-            builder.setCancelable(false)
-            builder.setPositiveButton("Restart") { _, _ ->
-                resetGame()
-                resume()
-            }
-            builder.setNegativeButton("Exit") { _, _ ->
-                (context as AppCompatActivity).finish()
-            }
-            builder.show()
-        }
-    }
-
-    fun resetGame() {
-        // Reset cờ trạng thái
-        isGameOver = false
-        isShieldActive = false
-        bulletBoostActive = false
-        missileActive = false
-        laserActive = false
-        armorActive = false
-
-        // Reset HP
-        spaceshipHP = 6
-
-        // Reset các danh sách đối tượng
-        bullets.clear()
-        missiles.clear()
-        lasers.clear()
-        targets.clear()
-        powerUps.clear()
-
-        // Reset điểm, frameCount
-        frameCount = 0
-
-        // Đặt lại vị trí phi thuyền về giữa màn hình
-        spaceshipX = (screenWidth - spaceshipBitmap.width) / 2f
-        spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
     }
 
     private fun control() {
@@ -701,18 +723,18 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         screenWidth = width
         screenHeight = height
 
-        // ================= Scale spaceship =================
+        // Scale spaceship
         val shipWidth = screenWidth / 5
         val shipHeight = shipWidth * spaceshipBitmap.height / spaceshipBitmap.width
         spaceshipBitmap = Bitmap.createScaledBitmap(spaceshipBitmap, shipWidth, shipHeight, true)
 
-        // ================= Scale target =================
+        // Scale target
         val targetWidth = screenWidth / 7
         val targetHeight = targetWidth * targetBitmap.height / targetBitmap.width
         targetBitmap = Bitmap.createScaledBitmap(targetBitmap, targetWidth, targetHeight, true)
 
-        // ================= Scale power-ups =================
-        val powerWidth = screenWidth / 13   // chiếm ~1/13 chiều rộng màn hình
+        // Scale power-ups
+        val powerWidth = screenWidth / 13
         val powerHeight = powerWidth * bulletPowerBitmap.height / bulletPowerBitmap.width
         bulletPowerBitmap = Bitmap.createScaledBitmap(bulletPowerBitmap, powerWidth, powerHeight, true)
         shieldPowerBitmap = Bitmap.createScaledBitmap(shieldPowerBitmap, powerWidth, powerHeight, true)
@@ -721,15 +743,21 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
         armorPowerBitmap = Bitmap.createScaledBitmap(armorPowerBitmap, powerWidth, powerHeight, true)
         hpPowerBitmap = Bitmap.createScaledBitmap(hpPowerBitmap, powerWidth, powerHeight, true)
 
-        // ================= Scale icon music/sound =================
+        // Scale Game Over images
+        val goWidth = screenWidth / 2
+        val goHeight = goWidth * youLoseBitmap.height / youLoseBitmap.width
+        youLoseBitmap = Bitmap.createScaledBitmap(youLoseBitmap, goWidth, goHeight, true)
+        gameOverBitmap = Bitmap.createScaledBitmap(gameOverBitmap, goWidth, goHeight, true)
+
+        // Scale icon music/sound
         val iconWidth = screenWidth / 8
         val iconHeight = iconWidth * musicOnBitmap.height / musicOnBitmap.width
-        musicOnBitmap = Bitmap.createScaledBitmap(musicOnBitmap, iconWidth, iconHeight, true)
-        musicOffBitmap = Bitmap.createScaledBitmap(musicOffBitmap, iconWidth, iconHeight, true)
-        soundOnBitmap = Bitmap.createScaledBitmap(soundOnBitmap, iconWidth, iconHeight, true)
-        soundOffBitmap = Bitmap.createScaledBitmap(soundOffBitmap, iconWidth, iconHeight, true)
+        musicOnBitmap = musicOnBitmap.scale(iconWidth, iconHeight)
+        musicOffBitmap = musicOffBitmap.scale(iconWidth, iconHeight)
+        soundOnBitmap = soundOnBitmap.scale(iconWidth, iconHeight)
+        soundOffBitmap = soundOffBitmap.scale(iconWidth, iconHeight)
 
-        // Music icon ở chính giữa cạnh trái
+        // Music icon
         val musicLeftOffset = 20f
         musicRect = RectF(
             musicLeftOffset,
@@ -738,7 +766,7 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             (screenHeight / 2f + iconHeight / 2f)
         )
 
-        // Sound icon ở chính giữa cạnh phải
+        // Sound icon
         val soundRightOffset = 20f
         soundRect = RectF(
             (screenWidth - iconWidth - soundRightOffset),
@@ -747,11 +775,37 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             (screenHeight / 2f + iconHeight / 2f)
         )
 
-        // ================= Vị trí ban đầu của phi thuyền =================
+        // Game Over buttons
+        val buttonWidth = screenWidth / 4f
+        val buttonHeight = 60f
+        val buttonSpacing = 20f
+        val startY = screenHeight / 2f + 100
+        replayButtonRect = RectF(
+            (screenWidth - buttonWidth) / 2,
+            startY,
+            (screenWidth + buttonWidth) / 2,
+            startY + buttonHeight
+        )
+        homeButtonRect = RectF(
+            (screenWidth - buttonWidth) / 2,
+            startY + buttonHeight + buttonSpacing,
+            (screenWidth + buttonWidth) / 2,
+            startY + 2 * buttonHeight + buttonSpacing
+        )
+        highScoresButtonRect = RectF(
+            (screenWidth - buttonWidth) / 2,
+            startY + 2 * buttonHeight + 2 * buttonSpacing,
+            (screenWidth + buttonWidth) / 2,
+            startY + 3 * buttonHeight + 2 * buttonSpacing
+        )
+
+        // Vị trí ban đầu của phi thuyền
         spaceshipX = (screenWidth / 2 - spaceshipBitmap.width / 2).toFloat()
         spaceshipY = (screenHeight - spaceshipBitmap.height - 50).toFloat()
     }
+
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         pause()
         if (this::bgm.isInitialized && bgm.isPlaying) {
@@ -761,38 +815,34 @@ class GameView(context: Context) : SurfaceView(context), Runnable, SurfaceHolder
             bgm.release()
         }
     }
-
 }
 
-// =================== CLASS BULLET ===================
 class Bullet(x: Float, y: Float) {
     val position: RectF
     private val speed = 40f
 
     init {
-        position = RectF(x, y, x + 10, y + 30) // viên đạn hình chữ nhật
+        position = RectF(x, y, x + 10, y + 30)
     }
 
     fun update() {
-        position.offset(0f, -speed) // bay lên trên
+        position.offset(0f, -speed)
     }
 }
 
-// =================== CLASS MISSILE (Cơ chế tấn công 2: Tên lửa tự dẫn) ===================
 class Missile(x: Float, y: Float, private val targets: MutableList<Target>) {
     val position: RectF
     private val speed = 30f
 
     init {
-        position = RectF(x, y, x + 15, y + 40) // lớn hơn đạn thường
+        position = RectF(x, y, x + 15, y + 40)
     }
 
     fun update() {
-        // Tìm mục tiêu gần nhất dựa trên khoảng cách Euclidean
         val nearestTarget = targets.minByOrNull {
             val dx = it.position.centerX() - position.centerX()
             val dy = it.position.centerY() - position.centerY()
-            (dx * dx + dy * dy) // Bình phương khoảng cách
+            (dx * dx + dy * dy)
         }
 
         if (nearestTarget != null) {
@@ -800,45 +850,40 @@ class Missile(x: Float, y: Float, private val targets: MutableList<Target>) {
             val dy = nearestTarget.position.centerY() - position.centerY()
             val dist = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
             if (dist > 0) {
-                val vx = (dx / dist) * speed / 2 // Tốc độ homing
-                val vy = (dy / dist) * speed / 2 // Không ưu tiên bay lên
+                val vx = (dx / dist) * speed / 2
+                val vy = (dy / dist) * speed / 2
                 position.offset(vx, vy)
             } else {
-                position.offset(0f, -speed) // Bay thẳng nếu mục tiêu trùng vị trí
+                position.offset(0f, -speed)
             }
         } else {
-            position.offset(0f, -speed) // Bay thẳng nếu không có mục tiêu
+            position.offset(0f, -speed)
         }
     }
 }
 
-// =================== CLASS LASER (Cơ chế tấn công 3: Laser liên tục) ===================
 class Laser(val x: Float, val spaceshipY: Float) {
     val position: RectF
     init {
-        position = RectF(x, 0f, x + 5f, spaceshipY) // Đường từ phi thuyền đến y=0
+        position = RectF(x, 0f, x + 5f, spaceshipY)
     }
 }
 
-// =================== CLASS TARGET ===================
 class Target(x: Float, y: Float, val bitmap: Bitmap) {
     val position: RectF
     private val speed = 4f
-    // Flag để chỉ cảnh báo 1 lần khi vượt nửa màn hình
     var hasWarned: Boolean = false
     init {
         position = RectF(x, y, x + bitmap.width, y + bitmap.height)
     }
-    fun update(screenHeight: Int, screenWidth: Int ) {
-        position.offset(0f, speed) // rơi xuống dưới
-        // Nếu đi quá dưới → xuất hiện lại trên
+    fun update(screenHeight: Int, screenWidth: Int) {
+        position.offset(0f, speed)
         if (position.top > screenHeight) {
             position.offsetTo(position.left, -bitmap.height.toFloat())
         }
     }
 }
 
-// =================== CLASS POWERUP ===================
 enum class PowerUpType { BULLET, MISSILE, LASER, SHIELD, ARMOR, HP }
 
 class PowerUp(x: Float, y: Float, val bitmap: Bitmap, val type: PowerUpType) {
