@@ -2,6 +2,7 @@ package com.example.banthuyen
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 class Bullet(x: Float, y: Float) {
@@ -56,18 +57,76 @@ class Laser(val x: Float, val spaceshipY: Float) {
     }
 }
 
-class Target(x: Float, y: Float, val bitmap: Bitmap) {
+enum class EnemyType {
+    BASIC,      // Di chuyển thẳng (Level 1)
+    ZIGZAG,     // Di chuyển zigzag (Level 2)
+    SHOOTER,    // Bắn lại người chơi (Level 2)
+    BOSS        // Boss mạnh (Level 3)
+}
+
+class Target(
+    x: Float,
+    y: Float,
+    val bitmap: Bitmap,
+    private val speed: Float = 4f,
+    val type: EnemyType = EnemyType.BASIC,
+    var hp: Int = 1
+) {
     val position: RectF
-    private val speed = 4f
     var hasWarned: Boolean = false
+    private var frameCount = 0
+    private var zigzagDirection = 1f
+
     init {
         position = RectF(x, y, x + bitmap.width, y + bitmap.height)
     }
-    fun update(screenHeight: Int, screenWidth: Int) {
-        position.offset(0f, speed)
+
+    fun update(screenHeight: Int, screenWidth: Int, levelSpeed: Float = speed) {
+        frameCount++
+
+        when (type) {
+            EnemyType.BASIC -> {
+                // Di chuyển thẳng xuống
+                position.offset(0f, levelSpeed)
+            }
+            EnemyType.ZIGZAG -> {
+                // Di chuyển zigzag
+                position.offset(0f, levelSpeed)
+                val zigzagSpeed = 3f
+                position.offset(zigzagSpeed * zigzagDirection, 0f)
+
+                // Đổi hướng khi chạm biên
+                if (position.left <= 0 || position.right >= screenWidth) {
+                    zigzagDirection *= -1
+                }
+            }
+            EnemyType.SHOOTER, EnemyType.BOSS -> {
+                // Di chuyển chậm hơn
+                position.offset(0f, levelSpeed * 0.5f)
+            }
+        }
+
         if (position.top > screenHeight) {
             position.offsetTo(position.left, -bitmap.height.toFloat())
         }
+    }
+
+    fun shouldShoot(): Boolean {
+        // Shooter và Boss bắn định kỳ
+        return (type == EnemyType.SHOOTER || type == EnemyType.BOSS) && frameCount % 60 == 0
+    }
+}
+
+class EnemyBullet(x: Float, y: Float) {
+    val position: RectF
+    private val speed = 15f
+
+    init {
+        position = RectF(x, y, x + 8, y + 20)
+    }
+
+    fun update() {
+        position.offset(0f, speed)
     }
 }
 

@@ -47,37 +47,37 @@ class HighScoresActivity : AppCompatActivity() {
 
         // Lấy dữ liệu điểm
         val model = GameModel(this)
-        val highScores = model.getHighScores().take(8) // chỉ lấy 8 điểm cao nhất
+        //val highScores = model.getHighScores().take(8) // chỉ lấy 8 điểm cao nhất
 
-        if (highScores.isEmpty()) {
-            val noScoresText = TextView(this).apply {
-                text = "Chưa có điểm số nào"
-                textSize = 20f
-                setTextColor(ContextCompat.getColor(context, android.R.color.white))
-                gravity = Gravity.CENTER
-                setPadding(0, 20, 0, 20)
-            }
-            mainLayout.addView(noScoresText)
-        } else {
-            // Hiển thị danh sách điểm
-            highScores.forEachIndexed { index, score ->
-                val scoreText = TextView(this).apply {
-                    text = "${index + 1}. ${score} điểm"
-                    textSize = 22f
-                    setTextColor(
-                        when (index) {
-                            0 -> ContextCompat.getColor(context, android.R.color.holo_orange_light)
-                            1 -> ContextCompat.getColor(context, android.R.color.darker_gray)
-                            2 -> ContextCompat.getColor(context, android.R.color.holo_orange_dark)
-                            else -> ContextCompat.getColor(context, android.R.color.white)
-                        }
-                    )
-                    gravity = Gravity.CENTER
-                    setPadding(0, 15, 0, 15)
-                }
-                mainLayout.addView(scoreText)
-            }
-        }
+//        if (highScores.isEmpty()) {
+//            val noScoresText = TextView(this).apply {
+//                text = "Chưa có điểm số nào"
+//                textSize = 20f
+//                setTextColor(ContextCompat.getColor(context, android.R.color.white))
+//                gravity = Gravity.CENTER
+//                setPadding(0, 20, 0, 20)
+//            }
+//            mainLayout.addView(noScoresText)
+//        } else {
+//            // Hiển thị danh sách điểm
+//            highScores.forEachIndexed { index, score ->
+//                val scoreText = TextView(this).apply {
+//                    text = "${index + 1}. ${score} điểm"
+//                    textSize = 22f
+//                    setTextColor(
+//                        when (index) {
+//                            0 -> ContextCompat.getColor(context, android.R.color.holo_orange_light)
+//                            1 -> ContextCompat.getColor(context, android.R.color.darker_gray)
+//                            2 -> ContextCompat.getColor(context, android.R.color.holo_orange_dark)
+//                            else -> ContextCompat.getColor(context, android.R.color.white)
+//                        }
+//                    )
+//                    gravity = Gravity.CENTER
+//                    setPadding(0, 15, 0, 15)
+//                }
+//                mainLayout.addView(scoreText)
+//            }
+//        }
 
         // Nút đóng
         val closeButton = Button(this).apply {

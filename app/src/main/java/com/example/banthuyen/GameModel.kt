@@ -13,7 +13,7 @@ import android.os.Looper
 import kotlin.math.min
 import kotlin.random.Random
 
-class GameModel(context: Context) {
+class GameModel(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var soundPool: SoundPool
     private var soundShoot = 0
@@ -21,10 +21,15 @@ class GameModel(context: Context) {
     private var soundWarning = 0
     private var soundPowerUp = 0
     private var soundShipExplosion = 0
+    private var soundCongratulation = 0
     private val soundLoaded = mutableMapOf<Int, Boolean>()
     private lateinit var bgm: MediaPlayer
-    var isMusicOn = false // Changed to public
-    var isSoundOn = true // Changed to public
+    var isMusicOn = false
+    var isSoundOn = true
+
+    val levelManager = LevelManager(context)
+    var isLevelComplete = false
+    var showLevelTransition = false
 
     // Game state
     var isGameOver = false
@@ -41,14 +46,16 @@ class GameModel(context: Context) {
 
     // Game objects
     lateinit var targetBitmap: Bitmap
+    private lateinit var originalTargetBitmap: Bitmap
     lateinit var bulletsBitmap: Bitmap
     val bullets = mutableListOf<Bullet>()
     val targets = mutableListOf<Target>()
     val powerUps = mutableListOf<PowerUp>()
     val missiles = mutableListOf<Missile>()
     val lasers = mutableListOf<Laser>()
+    val enemyBullets = mutableListOf<EnemyBullet>()
+    private val enemyBitmapCache = mutableMapOf<Int, Bitmap>()
 
-    // Power-ups
     lateinit var bulletPowerBitmap: Bitmap
     lateinit var shieldPowerBitmap: Bitmap
     lateinit var missilePowerBitmap: Bitmap
@@ -62,12 +69,11 @@ class GameModel(context: Context) {
     var armorActive = false
     private var bulletBoostRunnable: Runnable? = null
 
-    // Game over images
     lateinit var youLoseBitmap: Bitmap
     lateinit var gameOverBitmap: Bitmap
+    lateinit var congratulationsBitmap: Bitmap
     var gameOverImage: Bitmap? = null
 
-    // Audio icons
     lateinit var musicOnBitmap: Bitmap
     lateinit var musicOffBitmap: Bitmap
     lateinit var soundOnBitmap: Bitmap
@@ -76,9 +82,9 @@ class GameModel(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("GamePrefs", Context.MODE_PRIVATE)
 
     init {
-        // Initialize bitmaps
         spaceshipBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.phithuyen)
-        targetBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.muctieu)
+        originalTargetBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.muctieu)
+        targetBitmap = originalTargetBitmap.copy(Bitmap.Config.ARGB_8888, true)
         bulletsBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.dan)
         bulletPowerBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.dan)
         shieldPowerBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.khien)
@@ -88,12 +94,12 @@ class GameModel(context: Context) {
         hpPowerBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.hppower)
         youLoseBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.youlose)
         gameOverBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.gameover)
+        congratulationsBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.congratulations)
         musicOnBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.musicturnon)
         musicOffBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.musicturnoff)
         soundOnBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.soundon)
         soundOffBitmap = BitmapFactory.decodeResource(context.resources, R.drawable.soundoff)
 
-        // Initialize audio
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_GAME)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -113,6 +119,7 @@ class GameModel(context: Context) {
         soundWarning = soundPool.load(context, R.raw.warning, 1)
         soundPowerUp = soundPool.load(context, R.raw.powerup, 1)
         soundShipExplosion = soundPool.load(context, R.raw.shipexplosion, 1)
+        soundCongratulation = soundPool.load(context, R.raw.congratulation, 1)
 
         bgm = MediaPlayer.create(context, R.raw.backgroundmusic)
         bgm.isLooping = true
@@ -120,13 +127,33 @@ class GameModel(context: Context) {
         highScore = prefs.getInt("highScore", 0)
     }
 
+    fun applyLevelTargetTint() {
+        val level = levelManager.getCurrentLevel()
+        targetBitmap = levelManager.createTintedBitmap(originalTargetBitmap, level.targetTint)
+    }
+
+    fun getTintedBitmapForEnemy(tintColor: Int): Bitmap {
+        if (!enemyBitmapCache.containsKey(tintColor)) {
+            val tintedBitmap = levelManager.createTintedBitmap(targetBitmap, tintColor)
+            enemyBitmapCache[tintColor] = tintedBitmap
+        }
+        return enemyBitmapCache[tintColor]!!
+    }
+
     fun update(screenWidth: Int, screenHeight: Int, isShooting: Boolean) {
-        if (isGameOver) return
+        if (isGameOver || showLevelTransition) return
         frameCount++
 
-        // Shooting logic
-        val shootDelay = if (bulletBoostActive) 5 else 15
-        if (!missileActive && !laserActive && isShooting && frameCount % shootDelay == 0) {
+        val currentLevel = levelManager.getCurrentLevel()
+
+        if (score >= currentLevel.scoreToWin && !isLevelComplete) {
+            isLevelComplete = true
+            showLevelTransition = true
+            if (isSoundOn) playSound(soundCongratulation)
+            return
+        }
+
+        if (!missileActive && !laserActive && isShooting && frameCount % (if (bulletBoostActive) 5 else 15) == 0) {
             bullets.add(Bullet(spaceshipX + spaceshipBitmap.width / 2 - 5, spaceshipY))
             if (isSoundOn) playSound(soundShoot)
         }
@@ -139,7 +166,6 @@ class GameModel(context: Context) {
             if (isSoundOn) playSound(soundShoot)
         }
 
-        // Update bullets
         for (i in bullets.size - 1 downTo 0) {
             val b = bullets[i]
             b.update()
@@ -148,7 +174,6 @@ class GameModel(context: Context) {
             }
         }
 
-        // Update missiles
         for (i in missiles.size - 1 downTo 0) {
             val m = missiles[i]
             m.update()
@@ -157,16 +182,18 @@ class GameModel(context: Context) {
             }
         }
 
-        // Update lasers
         for (i in lasers.size - 1 downTo 0) {
             val l = lasers[i]
             var hitAny = false
             for (j in targets.size - 1 downTo 0) {
                 val t = targets[j]
                 if (t.position.bottom <= l.spaceshipY && RectF.intersects(l.position, t.position)) {
-                    targets.removeAt(j)
+                    t.hp -= 1
+                    if (t.hp <= 0) {
+                        targets.removeAt(j)
+                        score += 10
+                    }
                     hitAny = true
-                    score += 10
                 }
             }
             if (!hitAny) {
@@ -175,10 +202,17 @@ class GameModel(context: Context) {
             handler.postDelayed({ lasers.remove(l) }, 200)
         }
 
-        // Update targets
         for (i in targets.size - 1 downTo 0) {
             val t = targets[i]
-            t.update(screenHeight, screenWidth)
+            t.update(screenHeight, screenWidth, currentLevel.targetSpeed)
+
+            if (t.shouldShoot()) {
+                enemyBullets.add(EnemyBullet(
+                    t.position.centerX() - 4,
+                    t.position.bottom
+                ))
+            }
+
             if (t.position.top > screenHeight) {
                 targets.removeAt(i)
             } else if (t.position.top > screenHeight / 2 && !t.hasWarned) {
@@ -188,14 +222,29 @@ class GameModel(context: Context) {
             }
         }
 
-        // Spawn new targets
-        if (Random.nextInt(100) < 1.5) {
-            val x = Random.nextInt((screenWidth - targetBitmap.width).coerceAtLeast(1)).toFloat()
-            targets.add(Target(x, 0f, targetBitmap))
+        for (i in enemyBullets.size - 1 downTo 0) {
+            val eb = enemyBullets[i]
+            eb.update()
+            if (eb.position.top > screenHeight) {
+                enemyBullets.removeAt(i)
+            }
         }
 
-        // Spawn power-ups
-        if (Random.nextInt(500) < 2.5) {
+        for (enemyConfig in currentLevel.enemyConfigs) {
+            if (Random.nextInt(100) < enemyConfig.spawnRate) {
+                val x = Random.nextInt((screenWidth - targetBitmap.width).coerceAtLeast(1)).toFloat()
+                val tintedBitmap = getTintedBitmapForEnemy(enemyConfig.tintColor)
+                targets.add(Target(
+                    x, 0f,
+                    tintedBitmap,
+                    currentLevel.targetSpeed,
+                    enemyConfig.type,
+                    enemyConfig.hp
+                ))
+            }
+        }
+
+        if (Random.nextInt(500) < currentLevel.powerUpSpawnRate) {
             val x = Random.nextInt((screenWidth - bulletPowerBitmap.width).coerceAtLeast(1)).toFloat()
             val type = PowerUpType.entries.random()
             val bmp = when (type) {
@@ -209,7 +258,6 @@ class GameModel(context: Context) {
             powerUps.add(PowerUp(x, 0f, bmp, type))
         }
 
-        // Update power-ups
         for (i in powerUps.size - 1 downTo 0) {
             val p = powerUps[i]
             p.update(screenHeight)
@@ -264,7 +312,6 @@ class GameModel(context: Context) {
             }
         }
 
-        // Bullet collisions
         for (i in bullets.size - 1 downTo 0) {
             val b = bullets[i]
             var hit = false
@@ -272,8 +319,11 @@ class GameModel(context: Context) {
                 val t = targets[j]
                 if (RectF.intersects(b.position, t.position)) {
                     bullets.removeAt(i)
-                    targets.removeAt(j)
-                    score += 10
+                    t.hp -= 1
+                    if (t.hp <= 0) {
+                        targets.removeAt(j)
+                        score += 10
+                    }
                     hit = true
                     break
                 }
@@ -281,7 +331,6 @@ class GameModel(context: Context) {
             if (hit) continue
         }
 
-        // Missile collisions
         for (i in missiles.size - 1 downTo 0) {
             val m = missiles[i]
             var hit = false
@@ -289,8 +338,11 @@ class GameModel(context: Context) {
                 val t = targets[j]
                 if (RectF.intersects(m.position, t.position)) {
                     missiles.removeAt(i)
-                    targets.removeAt(j)
-                    score += 10
+                    t.hp -= 1
+                    if (t.hp <= 0) {
+                        targets.removeAt(j)
+                        score += 10
+                    }
                     hit = true
                     break
                 }
@@ -298,13 +350,46 @@ class GameModel(context: Context) {
             if (hit) continue
         }
 
-        // Spaceship collisions
         val shipRect = RectF(
             spaceshipX,
             spaceshipY,
             spaceshipX + spaceshipBitmap.width,
             spaceshipY + spaceshipBitmap.height
         )
+
+        for (i in enemyBullets.size - 1 downTo 0) {
+            val eb = enemyBullets[i]
+            if (RectF.intersects(eb.position, shipRect)) {
+                enemyBullets.removeAt(i)
+                if (isShieldActive) {
+                    isShieldActive = false
+                } else if (armorActive) {
+                    spaceshipHP -= 1
+                    armorActive = false
+                    if (spaceshipHP <= 0) {
+                        if (isSoundOn) playSound(soundShipExplosion)
+                        isGameOver = true
+                        if (score > highScore) {
+                            highScore = score
+                            prefs.edit().putInt("highScore", highScore).apply()
+                        }
+                        gameOverImage = if (Random.nextBoolean()) youLoseBitmap else gameOverBitmap
+                    }
+                } else {
+                    spaceshipHP -= 1
+                    if (spaceshipHP <= 0) {
+                        if (isSoundOn) playSound(soundShipExplosion)
+                        isGameOver = true
+                        if (score > highScore) {
+                            highScore = score
+                            prefs.edit().putInt("highScore", highScore).apply()
+                        }
+                        gameOverImage = if (Random.nextBoolean()) youLoseBitmap else gameOverBitmap
+                    }
+                }
+            }
+        }
+
         for (i in targets.size - 1 downTo 0) {
             val t = targets[i]
             if (RectF.intersects(t.position, shipRect)) {
@@ -340,8 +425,45 @@ class GameModel(context: Context) {
         }
     }
 
+    fun advanceToNextLevel(screenWidth: Int, screenHeight: Int) {
+        if (levelManager.hasNextLevel()) {
+            levelManager.nextLevel()
+            isLevelComplete = false
+            showLevelTransition = false
+
+            targets.clear()
+            bullets.clear()
+            missiles.clear()
+            lasers.clear()
+            powerUps.clear()
+            enemyBullets.clear()
+
+            enemyBitmapCache.clear()
+
+            applyLevelTargetTint()
+
+            val targetWidth = screenWidth / 7
+            val targetHeight = targetWidth * targetBitmap.height / targetBitmap.width
+            targetBitmap = Bitmap.createScaledBitmap(targetBitmap, targetWidth, targetHeight, true)
+        } else {
+            isGameOver = true
+            if (score > highScore) {
+                highScore = score
+                prefs.edit().putInt("highScore", highScore).apply()
+            }
+            gameOverImage = congratulationsBitmap
+        }
+    }
+
     fun resetGame(screenWidth: Int, screenHeight: Int) {
+        levelManager.resetToFirstLevel()
+        applyLevelTargetTint()
+
+        enemyBitmapCache.clear()
+
         isGameOver = false
+        isLevelComplete = false
+        showLevelTransition = false
         isShieldActive = false
         bulletBoostActive = false
         missileActive = false
@@ -354,6 +476,7 @@ class GameModel(context: Context) {
         lasers.clear()
         targets.clear()
         powerUps.clear()
+        enemyBullets.clear()
         score = 0
         startTime = System.currentTimeMillis()
         frameCount = 0

@@ -23,6 +23,19 @@ class GameController(
             val y = event.y
             when (it.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (model.showLevelTransition) {
+                        if (model.levelManager.hasNextLevel() && view.getNextLevelButtonRect().contains(x, y)) {
+                            model.advanceToNextLevel(view.width, view.height)
+                            return true
+                        } else if (!model.levelManager.hasNextLevel() && view.getHomeButtonRect().contains(x, y)) {
+                            val intent = Intent(context, MainActivity::class.java)
+                            context.startActivity(intent)
+                            (context as AppCompatActivity).finish()
+                            return true
+                        }
+                        return true
+                    }
+
                     if (model.isGameOver) {
                         if (view.getReplayButtonRect().contains(x, y)) {
                             model.resetGame(view.width, view.height)

@@ -22,6 +22,7 @@ class GameView(context: Context, private val model: GameModel) :
     private lateinit var replayButtonRect: RectF
     private lateinit var homeButtonRect: RectF
     private lateinit var highScoresButtonRect: RectF
+    private lateinit var nextLevelButtonRect: RectF // Added next level button
 
     init {
         holder.addCallback(this)
@@ -42,7 +43,57 @@ class GameView(context: Context, private val model: GameModel) :
     private fun drawGame() {
         if (holder.surface.isValid) {
             canvas = holder.lockCanvas()
-            canvas.drawColor(Color.BLACK)
+
+            val currentLevel = model.levelManager.getCurrentLevel()
+            canvas.drawColor(currentLevel.backgroundColor)
+
+            if (model.showLevelTransition) {
+                // Draw congratulations image
+                val imageWidth = screenWidth / 2
+                val imageHeight = imageWidth * model.congratulationsBitmap.height / model.congratulationsBitmap.width
+                val imageRect = RectF(
+                    (screenWidth - imageWidth) / 2f,
+                    (screenHeight - imageHeight) / 2f - 200,
+                    (screenWidth + imageWidth) / 2f,
+                    (screenHeight + imageHeight) / 2f - 200
+                )
+                canvas.drawBitmap(model.congratulationsBitmap, null, imageRect, paint)
+
+                // Draw level info
+                paint.color = Color.WHITE
+                paint.textSize = 60f
+                paint.textAlign = Paint.Align.CENTER
+                canvas.drawText("Level ${currentLevel.levelNumber} Complete!", screenWidth / 2f, screenHeight / 2f - 50, paint)
+
+                paint.textSize = 40f
+                canvas.drawText("Score: ${model.score} / ${currentLevel.scoreToWin}", screenWidth / 2f, screenHeight / 2f + 20, paint)
+
+                // Draw next level button or completion message
+                if (model.levelManager.hasNextLevel()) {
+                    paint.color = Color.rgb(50, 150, 50)
+                    paint.style = Paint.Style.FILL
+                    canvas.drawRect(nextLevelButtonRect, paint)
+
+                    paint.color = Color.WHITE
+                    paint.textSize = 50f
+                    canvas.drawText("Next Level", nextLevelButtonRect.centerX(), nextLevelButtonRect.centerY() + 15, paint)
+                } else {
+                    paint.textSize = 50f
+                    paint.color = Color.YELLOW
+                    canvas.drawText("All Levels Complete!", screenWidth / 2f, screenHeight / 2f + 100, paint)
+
+                    // Draw home button
+                    paint.color = Color.GRAY
+                    paint.style = Paint.Style.FILL
+                    canvas.drawRect(homeButtonRect, paint)
+
+                    paint.color = Color.WHITE
+                    canvas.drawText("Home", homeButtonRect.centerX(), homeButtonRect.centerY() + 15, paint)
+                }
+
+                holder.unlockCanvasAndPost(canvas)
+                return
+            }
 
             if (model.isGameOver) {
                 // Draw Game Over screen
@@ -75,6 +126,13 @@ class GameView(context: Context, private val model: GameModel) :
                 holder.unlockCanvasAndPost(canvas)
                 return
             }
+
+            paint.color = Color.WHITE
+            paint.textSize = 40f
+            paint.textAlign = Paint.Align.CENTER
+            canvas.drawText("Level ${currentLevel.levelNumber}: ${currentLevel.name}", screenWidth / 2f, 80f, paint)
+            paint.textSize = 30f
+            canvas.drawText("Target: ${currentLevel.scoreToWin} points", screenWidth / 2f, 120f, paint)
 
             // Draw HUD
             // HP Bar
@@ -134,9 +192,36 @@ class GameView(context: Context, private val model: GameModel) :
                 canvas.drawLine(laser.x, laser.spaceshipY, laser.x, 0f, paint)
             }
 
+            paint.color = Color.rgb(255, 100, 0)
+            paint.style = Paint.Style.FILL
+            for (eb in model.enemyBullets) {
+                canvas.drawRect(eb.position, paint)
+            }
+
             // Draw targets
             for (target in model.targets) {
                 canvas.drawBitmap(target.bitmap, target.position.left, target.position.top, paint)
+
+                if (target.hp > 1) {
+                    val hpBarWidth = target.bitmap.width.toFloat()
+                    val hpBarHeight = 8f
+                    val hpBarX = target.position.left
+                    val hpBarY = target.position.top - 12f
+
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.RED
+                    canvas.drawRect(hpBarX, hpBarY, hpBarX + hpBarWidth, hpBarY + hpBarHeight, paint)
+
+                    paint.color = Color.GREEN
+                    val maxHp = when(target.type) {
+                        EnemyType.BASIC -> 1
+                        EnemyType.ZIGZAG -> 2
+                        EnemyType.SHOOTER -> 3
+                        EnemyType.BOSS -> 5
+                    }
+                    val hpPercent = target.hp.toFloat() / maxHp
+                    canvas.drawRect(hpBarX, hpBarY, hpBarX + hpBarWidth * hpPercent, hpBarY + hpBarHeight, paint)
+                }
             }
 
             // Draw power-ups
@@ -197,6 +282,7 @@ class GameView(context: Context, private val model: GameModel) :
         val shipHeight = shipWidth * model.spaceshipBitmap.height / model.spaceshipBitmap.width
         model.spaceshipBitmap = Bitmap.createScaledBitmap(model.spaceshipBitmap, shipWidth, shipHeight, true)
 
+        model.applyLevelTargetTint()
         val targetWidth = screenWidth / 7
         val targetHeight = targetWidth * model.targetBitmap.height / model.targetBitmap.width
         model.targetBitmap = Bitmap.createScaledBitmap(model.targetBitmap, targetWidth, targetHeight, true)
@@ -214,6 +300,7 @@ class GameView(context: Context, private val model: GameModel) :
         val goHeight = goWidth * model.youLoseBitmap.height / model.youLoseBitmap.width
         model.youLoseBitmap = Bitmap.createScaledBitmap(model.youLoseBitmap, goWidth, goHeight, true)
         model.gameOverBitmap = Bitmap.createScaledBitmap(model.gameOverBitmap, goWidth, goHeight, true)
+        model.congratulationsBitmap = Bitmap.createScaledBitmap(model.congratulationsBitmap, goWidth, goHeight, true) // Scale congratulations
 
         val iconWidth = screenWidth / 8
         val iconHeight = iconWidth * model.musicOnBitmap.height / model.musicOnBitmap.width
@@ -259,6 +346,12 @@ class GameView(context: Context, private val model: GameModel) :
             (screenWidth + buttonWidth) / 2,
             startY + 3 * buttonHeight + 2 * buttonSpacing
         )
+        nextLevelButtonRect = RectF(
+            (screenWidth - buttonWidth) / 2,
+            startY + buttonHeight + buttonSpacing,
+            (screenWidth + buttonWidth) / 2,
+            startY + 2 * buttonHeight + buttonSpacing
+        )
 
         // Set initial spaceship position
         model.spaceshipX = (screenWidth / 2 - model.spaceshipBitmap.width / 2).toFloat()
@@ -298,4 +391,5 @@ class GameView(context: Context, private val model: GameModel) :
     fun getReplayButtonRect(): RectF = replayButtonRect
     fun getHomeButtonRect(): RectF = homeButtonRect
     fun getHighScoresButtonRect(): RectF = highScoresButtonRect
+    fun getNextLevelButtonRect(): RectF = nextLevelButtonRect // Added getter
 }
